@@ -259,6 +259,20 @@ def _http_get_json(url: str):
 # Bug reporting - opens a prefilled "New Issue" page on the GitHub repo
 # --------------------------------------------------------------------------
 
+# Standard GitHub label set for this repo: (label, description).
+ISSUE_LABELS = [
+    ("bug", "Something isn't working"),
+    ("enhancement", "New feature or request"),
+    ("documentation", "Improvements or additions to documentation"),
+    ("question", "Further information is requested"),
+    ("help wanted", "Extra attention is needed"),
+    ("good first issue", "Good for newcomers"),
+    ("accessibility", "Barrier affecting people with disabilities"),
+    ("duplicate", "This issue or pull request already exists"),
+    ("invalid", "This doesn't seem right"),
+    ("wontfix", "This will not be worked on"),
+]
+
 
 def _read_log_tail(max_lines: int = 40) -> str:
     try:
@@ -268,14 +282,14 @@ def _read_log_tail(max_lines: int = 40) -> str:
         return "(log file unavailable)"
 
 
-def build_issue_url(summary: str, details: str = "") -> str:
+def build_issue_url(summary: str, details: str = "", label: str = "bug") -> str:
     """Builds a GitHub 'New Issue' URL prefilled with diagnostic info.
 
     No credentials are required or stored: the user reviews and submits the
     issue themselves in their browser, which is the safest way to let a
     distributed app report bugs without embedding a GitHub token.
     """
-    title = f"[Bug Report] {summary}"[:120]
+    title = f"[{label.title()}] {summary}"[:120]
     body = (
         f"**Summary**\n{summary}\n\n"
         f"**App Version:** {APP_VERSION}\n"
@@ -284,13 +298,13 @@ def build_issue_url(summary: str, details: str = "") -> str:
         f"**Details**\n```\n{(details or 'N/A')[:3000]}\n```\n\n"
         f"**Recent Log**\n```\n{_read_log_tail()[:2500]}\n```\n"
     )
-    query = urlencode({"title": title, "body": body, "labels": "bug"})
+    query = urlencode({"title": title, "body": body, "labels": label})
     return f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/issues/new?{query}"
 
 
-def report_issue(summary: str, details: str = "") -> None:
-    url = build_issue_url(summary, details)
-    logger.info("Opening bug report in browser for: %s", summary)
+def report_issue(summary: str, details: str = "", label: str = "bug") -> None:
+    url = build_issue_url(summary, details, label)
+    logger.info("Opening bug report (label=%s) in browser for: %s", label, summary)
     webbrowser.open(url)
 
 
@@ -574,6 +588,75 @@ class Spinner:
 
 
 # --------------------------------------------------------------------------
+# GUI - Report Issue dialog
+# --------------------------------------------------------------------------
+
+
+class ReportDialog(tk.Toplevel):
+    """Lets the user pick a GitHub label and edit the summary before
+    opening a prefilled 'New Issue' page in their browser."""
+
+    def __init__(self, parent: tk.Tk, summary: str = "", details: str = "", default_label: str = "bug"):
+        super().__init__(parent)
+        self.details = details
+        self.title("Report Issue")
+        self.configure(bg=Theme.BG)
+        self.resizable(False, False)
+        self.transient(parent)
+        self.grab_set()
+
+        pad = tk.Frame(self, bg=Theme.BG, padx=20, pady=20)
+        pad.pack(fill="both", expand=True)
+
+        tk.Label(pad, text="Report an Issue", font=("Segoe UI", 13, "bold"), bg=Theme.BG, fg=Theme.FG).pack(
+            anchor="w"
+        )
+        tk.Label(
+            pad, text="This opens a prefilled GitHub issue for you to review and submit.",
+            font=Theme.FONT_BODY, bg=Theme.BG, fg=Theme.FG_MUTED, wraplength=380, justify="left",
+        ).pack(anchor="w", pady=(2, 14))
+
+        tk.Label(pad, text="Label", font=Theme.FONT_BODY, bg=Theme.BG, fg=Theme.FG).pack(anchor="w")
+        self.label_var = tk.StringVar(value=default_label)
+        label_names = [name for name, _ in ISSUE_LABELS]
+        self.label_combo = ttk.Combobox(pad, textvariable=self.label_var, values=label_names, state="readonly")
+        self.label_combo.pack(fill="x", pady=(4, 4))
+        self.label_combo.bind("<<ComboboxSelected>>", lambda e: self._update_description())
+
+        self.description_label = tk.Label(
+            pad, text="", font=("Segoe UI", 9, "italic"), bg=Theme.BG, fg=Theme.FG_MUTED
+        )
+        self.description_label.pack(anchor="w", pady=(0, 12))
+
+        tk.Label(pad, text="Summary", font=Theme.FONT_BODY, bg=Theme.BG, fg=Theme.FG).pack(anchor="w")
+        self.summary_entry = tk.Entry(
+            pad, bg="#0b1220", fg=Theme.FG, insertbackground=Theme.FG, relief="flat",
+        )
+        self.summary_entry.insert(0, summary)
+        self.summary_entry.pack(fill="x", ipady=6, pady=(4, 16))
+
+        button_row = tk.Frame(pad, bg=Theme.BG)
+        button_row.pack(fill="x")
+        self.send_btn = tk.Button(button_row, text="Open GitHub Issue", command=self._send)
+        _style_button(self.send_btn)
+        self.send_btn.pack(side="left")
+        self.cancel_btn = tk.Button(button_row, text="Cancel", command=self.destroy)
+        _style_button(self.cancel_btn, bg=Theme.BG_CARD, hover="#334155")
+        self.cancel_btn.pack(side="left", padx=(8, 0))
+
+        self._update_description()
+
+    def _update_description(self):
+        descriptions = dict(ISSUE_LABELS)
+        self.description_label.config(text=descriptions.get(self.label_var.get(), ""))
+
+    def _send(self):
+        summary = self.summary_entry.get().strip() or "No summary provided"
+        report_issue(summary, self.details, self.label_var.get())
+        self.destroy()
+
+
+# --------------------------------------------------------------------------
 # GUI - application shell / page navigation
 # --------------------------------------------------------------------------
 
@@ -762,7 +845,7 @@ class DashboardPage(tk.Frame):
         self.report_link.pack(pady=(0, 12))
         self.report_link.bind("<Enter>", lambda e: self.report_link.config(fg=Theme.ACCENT))
         self.report_link.bind("<Leave>", lambda e: self.report_link.config(fg=Theme.FG_MUTED))
-        self.report_link.bind("<Button-1>", lambda e: report_issue("User-reported issue from Dashboard"))
+        self.report_link.bind("<Button-1>", lambda e: ReportDialog(self.app, "", "", "bug"))
 
         self.spinner = Spinner(self.status_label, lambda: "Checking for updates...")
 
@@ -911,7 +994,7 @@ class ErrorPage(tk.Frame):
         self._pulse(step=0)
 
     def _report(self):
-        report_issue(self.error_message, self.error_details)
+        ReportDialog(self.app, self.error_message, self.error_details, "bug")
 
     def _pulse(self, step: int):
         # Brief pulse animation on the warning icon to draw attention.
