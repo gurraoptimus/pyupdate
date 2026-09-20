@@ -674,8 +674,8 @@ class WelcomePage(tk.Frame):
 
     @staticmethod
     def _blend(bg_hex: str, fg_hex: str, t: float) -> str:
-        bg = tuple(int(bg_hex[i : i + 2], 16) for i in (1, 3, 5))
-        fg = tuple(int(fg_hex[i : i + 2], 16) for i in (1, 3, 5))
+        bg = tuple(int(bg_hex[i:i + 2], 16) for i in (1, 3, 5))
+        fg = tuple(int(fg_hex[i:i + 2], 16) for i in (1, 3, 5))
         mixed = tuple(int(bg[i] + (fg[i] - bg[i]) * t) for i in range(3))
         return f"#{mixed[0]:02x}{mixed[1]:02x}{mixed[2]:02x}"
 
