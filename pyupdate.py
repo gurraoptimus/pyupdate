@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import os
 import platform
 import re
@@ -634,8 +635,14 @@ class WelcomePage(tk.Frame):
         center = tk.Frame(self, bg=Theme.BG)
         center.place(relx=0.5, rely=0.5, anchor="center")
 
-        self.logo_label = tk.Label(center, text="◆", font=("Segoe UI", 42), bg=Theme.BG, fg=Theme.BG)
-        self.logo_label.pack(pady=(0, 8))
+        # Fixed-height slot so the logo can float vertically via place()
+        # without disturbing the pack layout of the widgets below it.
+        logo_slot = tk.Frame(center, bg=Theme.BG, height=90, width=90)
+        logo_slot.pack(pady=(0, 8))
+        logo_slot.pack_propagate(False)
+
+        self.logo_label = tk.Label(logo_slot, text="◆", font=("Segoe UI", 42), bg=Theme.BG, fg=Theme.BG)
+        self.logo_label.place(relx=0.5, rely=0.5, anchor="center")
 
         self.title_label = tk.Label(center, text=APP_NAME, font=Theme.FONT_TITLE, bg=Theme.BG, fg=Theme.BG)
         self.title_label.pack()
@@ -657,6 +664,8 @@ class WelcomePage(tk.Frame):
             (self.subtitle_label, Theme.FG_MUTED),
         )
         self._animated = False
+        self._float_phase = 0.0
+        self._float_job = None
 
     def on_show(self):
         if not self._animated:
@@ -673,6 +682,7 @@ class WelcomePage(tk.Frame):
     def _fade_widget(self, index: int, t: float = 0.0):
         if index >= len(self._widgets):
             self.enter_btn.pack(pady=(0, 0))
+            self._start_float()
             return
         widget, target_color = self._widgets[index]
         widget.config(fg=self._blend(Theme.BG, target_color, t))
@@ -680,6 +690,18 @@ class WelcomePage(tk.Frame):
             self.after(20, lambda: self._fade_widget(index, min(t + 0.1, 1.0)))
         else:
             self.after(60, lambda: self._fade_widget(index + 1))
+
+    def _start_float(self):
+        # Continuous gentle bobbing animation to keep the welcome page lively.
+        if self._float_job is not None:
+            return
+        self._float_tick()
+
+    def _float_tick(self):
+        self._float_phase += 0.12
+        offset = round(6 * math.sin(self._float_phase))
+        self.logo_label.place_configure(rely=0.5, y=offset)
+        self._float_job = self.after(40, self._float_tick)
 
     def _enter(self):
         self.app.show_page("DashboardPage")
