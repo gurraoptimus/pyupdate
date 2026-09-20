@@ -14,6 +14,7 @@ import hashlib
 import json
 import logging
 import os
+import platform
 import re
 import shutil
 import subprocess
@@ -21,14 +22,16 @@ import sys
 import tempfile
 import threading
 import time
+import traceback
 import urllib.error
 import urllib.request
+import webbrowser
 import zipfile
 from dataclasses import dataclass, field
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 from typing import Callable, Optional
-from urllib.parse import urlparse
+from urllib.parse import urlencode, urlparse
 
 import tkinter as tk
 from tkinter import messagebox, scrolledtext, ttk
@@ -249,6 +252,45 @@ def _http_get_json(url: str):
         logger.warning("Update check attempt %d/%d failed: %s", attempt, MAX_RETRIES, last_err)
         time.sleep(min(2 ** attempt, 8))
     raise UpdateError(f"Could not reach update server: {last_err}")
+
+
+# --------------------------------------------------------------------------
+# Bug reporting - opens a prefilled "New Issue" page on the GitHub repo
+# --------------------------------------------------------------------------
+
+
+def _read_log_tail(max_lines: int = 40) -> str:
+    try:
+        lines = LOG_FILE.read_text(encoding="utf-8", errors="ignore").splitlines()
+        return "\n".join(lines[-max_lines:])
+    except OSError:
+        return "(log file unavailable)"
+
+
+def build_issue_url(summary: str, details: str = "") -> str:
+    """Builds a GitHub 'New Issue' URL prefilled with diagnostic info.
+
+    No credentials are required or stored: the user reviews and submits the
+    issue themselves in their browser, which is the safest way to let a
+    distributed app report bugs without embedding a GitHub token.
+    """
+    title = f"[Bug Report] {summary}"[:120]
+    body = (
+        f"**Summary**\n{summary}\n\n"
+        f"**App Version:** {APP_VERSION}\n"
+        f"**Platform:** {platform.platform()}\n"
+        f"**Python:** {sys.version.split()[0]}\n\n"
+        f"**Details**\n```\n{(details or 'N/A')[:3000]}\n```\n\n"
+        f"**Recent Log**\n```\n{_read_log_tail()[:2500]}\n```\n"
+    )
+    query = urlencode({"title": title, "body": body, "labels": "bug"})
+    return f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/issues/new?{query}"
+
+
+def report_issue(summary: str, details: str = "") -> None:
+    url = build_issue_url(summary, details)
+    logger.info("Opening bug report in browser for: %s", summary)
+    webbrowser.open(url)
 
 
 # --------------------------------------------------------------------------
@@ -568,8 +610,8 @@ class App(tk.Tk):
         if callable(on_show):
             on_show()
 
-    def show_error(self, message: str, retry_target: str = "DashboardPage"):
-        self.frames["ErrorPage"].set_error(message, retry_target)
+    def show_error(self, message: str, retry_target: str = "DashboardPage", details: str = ""):
+        self.frames["ErrorPage"].set_error(message, retry_target, details)
         self.show_page("ErrorPage")
 
     def _fade_in(self, alpha: float = 0.0):
@@ -691,6 +733,15 @@ class DashboardPage(tk.Frame):
         _style_button(self.recheck_btn, bg=Theme.BG_CARD, hover="#334155")
         self.recheck_btn.pack(side="left", padx=(8, 0))
 
+        self.report_link = tk.Label(
+            self, text="Found a bug? Report it", font=("Segoe UI", 9, "underline"),
+            bg=Theme.BG, fg=Theme.FG_MUTED, cursor="hand2",
+        )
+        self.report_link.pack(pady=(0, 12))
+        self.report_link.bind("<Enter>", lambda e: self.report_link.config(fg=Theme.ACCENT))
+        self.report_link.bind("<Leave>", lambda e: self.report_link.config(fg=Theme.FG_MUTED))
+        self.report_link.bind("<Button-1>", lambda e: report_issue("User-reported issue from Dashboard"))
+
         self.spinner = Spinner(self.status_label, lambda: "Checking for updates...")
 
     def on_show(self):
@@ -716,23 +767,23 @@ class DashboardPage(tk.Frame):
             release = self.manager_check()
         except UpdateError as e:
             logger.error("Update check failed: %s", e)
-            self.after(0, self._show_check_error, str(e))
+            self.after(0, self._show_check_error, str(e), "")
             return
         except Exception as e:  # unexpected/defensive
             logger.exception("Unexpected error during update check")
-            self.after(0, self._show_check_error, str(e))
+            self.after(0, self._show_check_error, str(e), traceback.format_exc())
             return
         self.after(0, self._show_check_result, release)
 
     def manager_check(self):
         return self.app.manager.check()
 
-    def _show_check_error(self, message: str):
+    def _show_check_error(self, message: str, details: str = ""):
         self.spinner.stop()
         self.recheck_btn.config(state="normal")
         # Transient network hiccups stay inline; route to the Error page too
         # so the user has a clear retry path for persistent failures.
-        self.app.show_error(message, retry_target="DashboardPage")
+        self.app.show_error(message, retry_target="DashboardPage", details=details)
 
     def _show_check_result(self, release: Optional[ReleaseInfo]):
         self.spinner.stop()
@@ -779,16 +830,16 @@ class DashboardPage(tk.Frame):
             # here, something prevented the restart from happening.
         except UpdateError as e:
             logger.error("Update failed: %s", e)
-            self.after(0, self._show_update_error, str(e))
+            self.after(0, self._show_update_error, str(e), "")
         except Exception as e:
             logger.exception("Unexpected error during update installation")
-            self.after(0, self._show_update_error, str(e))
+            self.after(0, self._show_update_error, str(e), traceback.format_exc())
 
-    def _show_update_error(self, message: str):
+    def _show_update_error(self, message: str, details: str = ""):
         self.progress.pack_forget()
         self.update_btn.config(state="normal")
         self.recheck_btn.config(state="normal")
-        self.app.show_error(message, retry_target="DashboardPage")
+        self.app.show_error(message, retry_target="DashboardPage", details=details)
 
 
 # --------------------------------------------------------------------------
@@ -801,6 +852,8 @@ class ErrorPage(tk.Frame):
         super().__init__(parent, bg=Theme.BG)
         self.app = app
         self.retry_target = "DashboardPage"
+        self.error_message = ""
+        self.error_details = ""
 
         center = tk.Frame(self, bg=Theme.BG)
         center.place(relx=0.5, rely=0.5, anchor="center")
@@ -821,14 +874,22 @@ class ErrorPage(tk.Frame):
         self.retry_btn = tk.Button(button_row, text="Retry", command=self._retry)
         _style_button(self.retry_btn)
         self.retry_btn.pack(side="left")
+        self.report_btn = tk.Button(button_row, text="Report Issue", command=self._report)
+        _style_button(self.report_btn, bg=Theme.DANGER, hover="#dc2626")
+        self.report_btn.pack(side="left", padx=(8, 0))
         self.quit_btn = tk.Button(button_row, text="Quit", command=self.app.destroy)
         _style_button(self.quit_btn, bg=Theme.BG_CARD, hover="#334155")
         self.quit_btn.pack(side="left", padx=(8, 0))
 
-    def set_error(self, message: str, retry_target: str):
+    def set_error(self, message: str, retry_target: str, details: str = ""):
         self.retry_target = retry_target
+        self.error_message = message
+        self.error_details = details
         self.message_label.config(text=message)
         self._pulse(step=0)
+
+    def _report(self):
+        report_issue(self.error_message, self.error_details)
 
     def _pulse(self, step: int):
         # Brief pulse animation on the warning icon to draw attention.
